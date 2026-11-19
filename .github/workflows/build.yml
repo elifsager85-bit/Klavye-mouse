@@ -1,0 +1,345 @@
+name: APK derle
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.2
+      - name: Proje dosyalarini olustur
+        run: |
+          mkdir -p app
+          cat > app/build.gradle.kts <<'KM_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.klavyemouse"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.klavyemouse"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          KM_EOF
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'KM_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="Klavye Mouse"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".MouseService"
+                      android:exported="false"
+                      android:label="Klavye Mouse"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService"/>
+                      </intent-filter>
+                      <meta-data android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config"/>
+                  </service>
+              </application>
+          </manifest>
+          KM_EOF
+          mkdir -p app/src/main/java/com/klavyemouse
+          cat > app/src/main/java/com/klavyemouse/MainActivity.kt <<'KM_EOF'
+          package com.klavyemouse
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val d = resources.displayMetrics.density
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setPadding((24 * d).toInt(), (24 * d).toInt(), (24 * d).toInt(), (24 * d).toInt())
+                  }
+                  root.addView(TextView(this).apply {
+                      text = "Klavye Mouse\n\n1) Aşağıdaki düğmeye bas.\n2) Erişilebilirlik > Yüklü uygulamalar > Klavye Mouse'u aç.\n3) Ekranda küçük panel ve imleç belirir. Oyuna geçince de ekranda kalır."
+                      textSize = 16f
+                  })
+                  root.addView(Button(this).apply {
+                      text = "Erişilebilirlik ayarlarını aç"
+                      setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                  })
+                  setContentView(root)
+              }
+          }
+          KM_EOF
+          mkdir -p app/src/main/java/com/klavyemouse
+          cat > app/src/main/java/com/klavyemouse/MouseService.kt <<'KM_EOF'
+          package com.klavyemouse
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Context
+          import android.graphics.*
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.*
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import java.util.Locale
+          import kotlin.math.abs
+
+          class MouseService : AccessibilityService() {
+              private lateinit var wm: WindowManager
+              private lateinit var ui: Context
+              private var cursor: View? = null
+              private var panel: LinearLayout? = null
+              private lateinit var cursorLp: WindowManager.LayoutParams
+              private lateinit var panelLp: WindowManager.LayoutParams
+              private var cx = 300f
+              private var cy = 600f
+              private var caps = false
+              private val handler = Handler(Looper.getMainLooper())
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun lp(w: Int, h: Int, flags: Int) = WindowManager.LayoutParams(
+                  w, h, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT
+              ).apply { gravity = Gravity.TOP or Gravity.START }
+
+              override fun onServiceConnected() {
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  ui = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+                  addCursor()
+                  addPanel()
+              }
+
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              override fun onDestroy() {
+                  try { cursor?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
+                  try { panel?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
+                  super.onDestroy()
+              }
+
+              private fun addCursor() {
+                  val v = object : View(ui) {
+                      override fun onDraw(c: Canvas) {
+                          val p = Path().apply {
+                              moveTo(0f, 0f); lineTo(0f, height * 0.85f); lineTo(width * 0.28f, height * 0.65f)
+                              lineTo(width * 0.5f, height.toFloat()); lineTo(width * 0.65f, height * 0.92f)
+                              lineTo(width * 0.45f, height * 0.58f); lineTo(width * 0.8f, height * 0.58f); close()
+                          }
+                          val f = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+                          val s = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 3f }
+                          c.drawPath(p, f); c.drawPath(p, s)
+                      }
+                  }
+                  cursorLp = lp(dp(26), dp(26),
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                  cursorLp.x = cx.toInt(); cursorLp.y = cy.toInt()
+                  wm.addView(v, cursorLp)
+                  cursor = v
+              }
+
+              private fun moveCursor(dx: Float, dy: Float) {
+                  val m = resources.displayMetrics
+                  cx = (cx + dx).coerceIn(0f, m.widthPixels - 1f)
+                  cy = (cy + dy).coerceIn(0f, m.heightPixels - 1f)
+                  cursorLp.x = cx.toInt(); cursorLp.y = cy.toInt()
+                  cursor?.let { wm.updateViewLayout(it, cursorLp) }
+              }
+
+              private fun tap(dur: Long) {
+                  val path = Path().apply { moveTo(cx, cy) }
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, dur)).build()
+                  dispatchGesture(g, null, null)
+              }
+
+              private fun typeText(s: String) {
+                  val node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return
+                  val cur = node.text?.toString() ?: ""
+                  val add = if (caps) s.uppercase(Locale("tr")) else s
+                  caps = false
+                  setText(node, cur + add)
+              }
+
+              private fun backspace() {
+                  val node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return
+                  setText(node, (node.text?.toString() ?: "").dropLast(1))
+              }
+
+              private fun setText(node: AccessibilityNodeInfo, t: String) {
+                  val a = Bundle().apply {
+                      putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, t)
+                  }
+                  node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, a)
+              }
+
+              private fun btn(label: String, w: Float = 1f, h: Int = 36, onClick: () -> Unit) = Button(ui).apply {
+                  text = label; textSize = 12f; isAllCaps = false
+                  setPadding(0, 0, 0, 0); minWidth = 0; minimumWidth = 0; minHeight = 0; minimumHeight = 0
+                  layoutParams = LinearLayout.LayoutParams(0, dp(h), w).apply { setMargins(dp(1), dp(1), dp(1), dp(1)) }
+                  setOnClickListener { onClick() }
+              }
+
+              private fun row(vararg v: View) = LinearLayout(ui).apply {
+                  orientation = LinearLayout.HORIZONTAL
+                  v.forEach { addView(it) }
+              }
+
+              private fun addPanel() {
+                  val p = LinearLayout(ui).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(6), dp(6), dp(6), dp(6))
+                      background = GradientDrawable().apply { setColor(0xE6222222.toInt()); cornerRadius = dp(12).toFloat() }
+                  }
+                  panelLp = lp(dp(300), WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                  panelLp.x = dp(20); panelLp.y = dp(80)
+
+                  // Klavye
+                  val kb = LinearLayout(ui).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+                  listOf("1234567890", "qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç").forEach { r ->
+                      kb.addView(row(*r.map { ch -> btn(ch.toString(), h = 34) { typeText(ch.toString()) } }.toTypedArray()))
+                  }
+                  kb.addView(row(
+                      btn("⇧", 1.2f, 34) { caps = !caps },
+                      btn("boşluk", 4f, 34) { typeText(" ") },
+                      btn(",", 1f, 34) { typeText(",") },
+                      btn(".", 1f, 34) { typeText(".") },
+                      btn("⌫", 1.2f, 34) { backspace() }
+                  ))
+
+                  // Başlık (sürükle)
+                  val title = TextView(ui).apply {
+                      text = "✥ Klavye Mouse"; setTextColor(Color.WHITE); textSize = 13f
+                      gravity = Gravity.CENTER_VERTICAL
+                      layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f)
+                  }
+                  var ox = 0f; var oy = 0f; var sx = 0; var sy = 0
+                  title.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { ox = e.rawX; oy = e.rawY; sx = panelLp.x; sy = panelLp.y }
+                          MotionEvent.ACTION_MOVE -> {
+                              panelLp.x = sx + (e.rawX - ox).toInt(); panelLp.y = sy + (e.rawY - oy).toInt()
+                              wm.updateViewLayout(p, panelLp)
+                          }
+                      }
+                      true
+                  }
+                  val bar = row(title,
+                      btn("⌨", 0.5f) { kb.visibility = if (kb.visibility == View.GONE) View.VISIBLE else View.GONE },
+                      btn("✕", 0.5f) { disableSelf() })
+
+                  // Touchpad
+                  val pad = View(ui).apply {
+                      background = GradientDrawable().apply { setColor(0xFF3A3A3A.toInt()); cornerRadius = dp(8).toFloat() }
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(110))
+                          .apply { setMargins(dp(1), dp(3), dp(1), dp(3)) }
+                  }
+                  var lx = 0f; var ly = 0f; var moved = 0f; var t0 = 0L
+                  pad.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { lx = e.rawX; ly = e.rawY; moved = 0f; t0 = e.eventTime }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = e.rawX - lx; val dy = e.rawY - ly
+                              lx = e.rawX; ly = e.rawY; moved += abs(dx) + abs(dy)
+                              moveCursor(dx * 2f, dy * 2f)
+                          }
+                          MotionEvent.ACTION_UP -> if (moved < dp(8) && e.eventTime - t0 < 200) tap(50)
+                      }
+                      true
+                  }
+
+                  val buttons = row(
+                      btn("Tık") { tap(50) },
+                      btn("Çift tık") { tap(40); handler.postDelayed({ tap(40) }, 120) },
+                      btn("Basılı tut") { tap(600) }
+                  )
+
+                  p.addView(bar); p.addView(pad); p.addView(buttons); p.addView(kb)
+                  wm.addView(p, panelLp)
+                  panel = p
+              }
+          }
+          KM_EOF
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'KM_EOF'
+          <resources>
+              <string name="desc">Ekranda yüzen mouse imleci ve klavye gösterir; imlecin olduğu yere dokunuş gönderir.</string>
+          </resources>
+          KM_EOF
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/accessibility_config.xml <<'KM_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:notificationTimeout="100"
+              android:description="@string/desc"/>
+          KM_EOF
+          cat > build.gradle.kts <<'KM_EOF'
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          KM_EOF
+          cat > gradle.properties <<'KM_EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.nonTransitiveRClass=true
+          KM_EOF
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties <<'KM_EOF'
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.2-bin.zip
+          KM_EOF
+          cat > settings.gradle.kts <<'KM_EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "KlavyeMouse"
+          include(":app")
+          KM_EOF
+      - name: Derle
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Klavye-Mouse-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
