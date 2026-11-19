@@ -27,7 +27,7 @@ jobs:
               compileSdk = 34
               defaultConfig {
                   applicationId = "com.klavyemouse"
-                  minSdk = 24
+                  minSdk = 26
                   targetSdk = 34
                   versionCode = 1
                   versionName = "1.0"
@@ -118,6 +118,8 @@ jobs:
           import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.TextView
+          import android.widget.Toast
+          import kotlin.math.sqrt
           import java.util.Locale
           import kotlin.math.abs
 
@@ -132,6 +134,14 @@ jobs:
               private var cy = 600f
               private var caps = false
               private val handler = Handler(Looper.getMainLooper())
+              private val held = HashSet<Char>()
+              private var joyX = 0f
+              private var joyY = 0f
+              private var jumpX = 0f
+              private var jumpY = 0f
+              private var joyStroke: GestureDescription.StrokeDescription? = null
+              private var joyTx = 0f
+              private var joyTy = 0f
 
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -142,6 +152,9 @@ jobs:
               override fun onServiceConnected() {
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
                   ui = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+                  val m = resources.displayMetrics
+                  joyX = m.widthPixels * 0.15f; joyY = m.heightPixels * 0.72f
+                  jumpX = m.widthPixels * 0.88f; jumpY = m.heightPixels * 0.55f
                   addCursor()
                   addPanel()
               }
@@ -184,11 +197,61 @@ jobs:
                   cursor?.let { wm.updateViewLayout(it, cursorLp) }
               }
 
-              private fun tap(dur: Long) {
-                  val path = Path().apply { moveTo(cx, cy) }
+              private fun tap(dur: Long) = tapAt(cx, cy, dur)
+
+              private fun tapAt(x: Float, y: Float, dur: Long) {
+                  val path = Path().apply { moveTo(x, y) }
                   val g = GestureDescription.Builder()
                       .addStroke(GestureDescription.StrokeDescription(path, 0, dur)).build()
                   dispatchGesture(g, null, null)
+              }
+
+              private fun updateJoystick() {
+                  var dx = 0f; var dy = 0f
+                  if ('w' in held) dy -= 1f
+                  if ('s' in held) dy += 1f
+                  if ('a' in held) dx -= 1f
+                  if ('d' in held) dx += 1f
+                  if (dx == 0f && dy == 0f) { endJoystick(); return }
+                  val len = sqrt(dx * dx + dy * dy)
+                  val r = dp(45).toFloat()
+                  joyTx = joyX + dx / len * r; joyTy = joyY + dy / len * r
+                  val path = Path().apply { moveTo(joyX, joyY); lineTo(joyTx, joyTy) }
+                  val st = GestureDescription.StrokeDescription(path, 0, 120, true)
+                  joyStroke = st
+                  dispatchJoy(st)
+              }
+
+              private fun dispatchJoy(st: GestureDescription.StrokeDescription) {
+                  val g = GestureDescription.Builder().addStroke(st).build()
+                  dispatchGesture(g, object : GestureResultCallback() {
+                      override fun onCompleted(d: GestureDescription?) {
+                          if (joyStroke === st && held.isNotEmpty()) {
+                              val path = Path().apply { moveTo(joyTx, joyTy) }
+                              val next = st.continueStroke(path, 0, 120, true)
+                              joyStroke = next
+                              dispatchJoy(next)
+                          }
+                      }
+                  }, null)
+              }
+
+              private fun endJoystick() {
+                  val prev = joyStroke ?: return
+                  joyStroke = null
+                  val path = Path().apply { moveTo(joyTx, joyTy) }
+                  val st = prev.continueStroke(path, 0, 50, false)
+                  dispatchGesture(GestureDescription.Builder().addStroke(st).build(), null, null)
+              }
+
+              private fun holdBtn(label: String, c: Char) = btn(label, h = 40) {}.apply {
+                  setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { held.add(c); updateJoystick() }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { held.remove(c); updateJoystick() }
+                      }
+                      true
+                  }
               }
 
               private fun typeText(s: String) {
@@ -294,7 +357,13 @@ jobs:
                       btn("Basılı tut") { tap(600) }
                   )
 
-                  p.addView(bar); p.addView(pad); p.addView(buttons); p.addView(kb)
+                  val game = row(holdBtn("W", 'w'), holdBtn("A", 'a'), holdBtn("S", 's'), holdBtn("D", 'd'))
+                  val game2 = row(
+                      btn("Çubuk=imleç", 1.3f) { joyX = cx; joyY = cy; Toast.makeText(this, "Hareket çubuğu konumu kaydedildi", Toast.LENGTH_SHORT).show() },
+                      btn("Zıpla") { tapAt(jumpX, jumpY, 60) },
+                      btn("Zıpla=imleç", 1.3f) { jumpX = cx; jumpY = cy; Toast.makeText(this, "Zıpla konumu kaydedildi", Toast.LENGTH_SHORT).show() }
+                  )
+                  p.addView(bar); p.addView(pad); p.addView(buttons); p.addView(game); p.addView(game2); p.addView(kb)
                   wm.addView(p, panelLp)
                   panel = p
               }
