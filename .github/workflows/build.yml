@@ -23,11 +23,11 @@ jobs:
               id("org.jetbrains.kotlin.android")
           }
           android {
-              namespace = "com.klavyemouse.bt"
+              namespace = "com.klavyemouse.shz"
               compileSdk = 34
               defaultConfig {
-                  applicationId = "com.klavyemouse.bt"
-                  minSdk = 28
+                  applicationId = "com.klavyemouse.shz"
+                  minSdk = 26
                   targetSdk = 34
                   versionCode = 1
                   versionName = "1.0"
@@ -38,369 +38,370 @@ jobs:
               }
               kotlinOptions { jvmTarget = "17" }
           }
+          dependencies {
+              implementation("dev.rikka.shizuku:api:13.1.5")
+              implementation("dev.rikka.shizuku:provider:13.1.5")
+              implementation("org.lsposed.hiddenapibypass:hiddenapibypass:4.3")
+          }
           KM_EOF
           mkdir -p app/src/main
           cat > app/src/main/AndroidManifest.xml <<'KM_EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
-              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
-              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
-              <uses-feature android:name="android.hardware.bluetooth" android:required="true"/>
               <application
-                  android:label="Klavye Mouse BT"
-                  android:theme="@android:style/Theme.Material.NoActionBar">
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:screenOrientation="sensorLandscape"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
+                  android:label="Klavye Mouse Shizuku"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
                   </activity>
+                  <service
+                      android:name=".MouseService"
+                      android:exported="false"
+                      android:label="Klavye Mouse Shizuku"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService"/>
+                      </intent-filter>
+                      <meta-data android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config"/>
+                  </service>
+                  <provider
+                      android:name="rikka.shizuku.ShizukuProvider"
+                      android:authorities="${applicationId}.shizuku"
+                      android:enabled="true"
+                      android:exported="true"
+                      android:multiprocess="false"
+                      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>
               </application>
           </manifest>
           KM_EOF
-          mkdir -p app/src/main/java/com/klavyemouse/bt
-          cat > app/src/main/java/com/klavyemouse/bt/MainActivity.kt <<'KM_EOF'
-          package com.klavyemouse.bt
+          mkdir -p app/src/main/java/com/klavyemouse/shz
+          cat > app/src/main/java/com/klavyemouse/shz/KeyInjector.kt <<'KM_EOF'
+          package com.klavyemouse.shz
 
-          import android.Manifest
-          import android.annotation.SuppressLint
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.SystemClock
+          import android.view.InputDevice
+          import android.view.InputEvent
+          import android.view.KeyEvent
+          import org.lsposed.hiddenapibypass.HiddenApiBypass
+          import rikka.shizuku.Shizuku
+          import rikka.shizuku.ShizukuBinderWrapper
+          import rikka.shizuku.SystemServiceHelper
+          import java.lang.reflect.Method
+
+          object KeyInjector {
+              private var im: Any? = null
+              private var inject: Method? = null
+
+              /** null = hazir, aksi halde hata metni */
+              fun init(): String? {
+                  if (inject != null) return null
+                  return try {
+                      if (Build.VERSION.SDK_INT >= 28) HiddenApiBypass.addHiddenApiExemptions("L")
+                      if (!Shizuku.pingBinder()) return "Shizuku çalışmıyor. Shizuku uygulamasını açıp başlat."
+                      if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return "Shizuku izni verilmedi."
+                      val binder: IBinder = ShizukuBinderWrapper(SystemServiceHelper.getSystemService("input"))
+                      val stub = Class.forName("android.hardware.input.IInputManager\$Stub")
+                      im = stub.getMethod("asInterface", IBinder::class.java).invoke(null, binder)
+                      val iface = Class.forName("android.hardware.input.IInputManager")
+                      inject = iface.getMethod("injectInputEvent", InputEvent::class.java, Int::class.javaPrimitiveType)
+                      null
+                  } catch (e: Throwable) {
+                      "Hata: " + e.toString()
+                  }
+              }
+
+              fun key(code: Int, down: Boolean) {
+                  if (init() != null) return
+                  val now = SystemClock.uptimeMillis()
+                  val ev = KeyEvent(
+                      now, now,
+                      if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP,
+                      code, 0, 0, -1, 0, 0, InputDevice.SOURCE_KEYBOARD
+                  )
+                  try { inject?.invoke(im, ev, 0) } catch (_: Throwable) {}
+              }
+          }
+          KM_EOF
+          mkdir -p app/src/main/java/com/klavyemouse/shz
+          cat > app/src/main/java/com/klavyemouse/shz/MainActivity.kt <<'KM_EOF'
+          package com.klavyemouse.shz
+
           import android.app.Activity
-          import android.bluetooth.BluetoothAdapter
-          import android.bluetooth.BluetoothDevice
-          import android.bluetooth.BluetoothHidDevice
-          import android.bluetooth.BluetoothHidDeviceAppSdpSettings
-          import android.bluetooth.BluetoothManager
-          import android.bluetooth.BluetoothProfile
           import android.content.Intent
           import android.content.pm.PackageManager
-          import android.graphics.Color
-          import android.graphics.drawable.GradientDrawable
-          import android.os.Build
           import android.os.Bundle
           import android.os.Handler
           import android.os.Looper
           import android.provider.Settings
-          import android.view.MotionEvent
-          import android.view.View
-          import android.view.ViewGroup
-          import android.view.WindowManager
+          import android.view.KeyEvent
           import android.widget.Button
-          import android.widget.FrameLayout
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
-          import kotlin.math.abs
+          import rikka.shizuku.Shizuku
 
-          @SuppressLint("MissingPermission", "ClickableViewAccessibility")
           class MainActivity : Activity() {
-
-              companion object {
-                  private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
-                  // Klavye (rapor 1) + Mouse (rapor 2) HID tanimlayicisi
-                  val DESC: ByteArray = intArrayOf(
-                      0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,
-                      0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
-                      0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
-                      0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x81, 0x00,
-                      0xC0,
-                      0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x02, 0x09, 0x01, 0xA1, 0x00,
-                      0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
-                      0x95, 0x01, 0x75, 0x05, 0x81, 0x01,
-                      0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06,
-                      0xC0, 0xC0
-                  ).map { it.toByte() }.toByteArray()
-              }
-
-              private var adapter: BluetoothAdapter? = null
-              private var hid: BluetoothHidDevice? = null
-              private var host: BluetoothDevice? = null
+              private lateinit var status: TextView
               private val handler = Handler(Looper.getMainLooper())
-              private lateinit var root: FrameLayout
-              private var statusTv: TextView? = null
-              private var listBox: LinearLayout? = null
-              private val pressed = ArrayList<Int>()
-              private var mods = 0
-              private var mbtn = 0
-
-              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
-                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                  root = FrameLayout(this)
-                  root.setBackgroundColor(0xFF111111.toInt())
-                  setContentView(root)
-                  showConnect()
-                  if (Build.VERSION.SDK_INT >= 31 &&
-                      checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                      requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1)
-                  } else {
-                      initBt()
+                  val d = resources.displayMetrics.density
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding((20 * d).toInt(), (20 * d).toInt(), (20 * d).toInt(), (20 * d).toInt())
                   }
+                  col.addView(TextView(this).apply {
+                      text = "Klavye Mouse (Shizuku)\n\n1) Shizuku uygulamasını kur ve başlat.\n2) 'Shizuku izni iste'ye bas.\n3) 'Erişilebilirlik ayarlarını aç' ile bu uygulamayı etkinleştir.\n4) 'Tuş testi' ile gerçek tuşun gittiğini dene."
+                      textSize = 15f
+                  })
+                  status = TextView(this).apply { textSize = 15f; setPadding(0, (12 * d).toInt(), 0, (12 * d).toInt()) }
+                  col.addView(status)
+                  fun btn(t: String, on: () -> Unit) = Button(this).apply { text = t; isAllCaps = false; setOnClickListener { on() } }
+                  col.addView(btn("Shizuku izni iste") {
+                      try {
+                          if (!Shizuku.pingBinder()) status.text = "Shizuku çalışmıyor. Önce Shizuku uygulamasını aç ve başlat."
+                          else Shizuku.requestPermission(1)
+                      } catch (e: Throwable) { status.text = "Hata: $e" }
+                      handler.postDelayed({ refresh() }, 1500)
+                  })
+                  col.addView(btn("Erişilebilirlik ayarlarını aç") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
+                  col.addView(btn("Tuş testi (5 sn sonra 'a' yazar)") {
+                      val err = KeyInjector.init()
+                      if (err != null) { status.text = err }
+                      else {
+                          status.text = "5 saniye içinde bir yazı kutusuna bas. 'aaa' yazılmalı."
+                          for (i in 0 until 3) handler.postDelayed({
+                              KeyInjector.key(KeyEvent.KEYCODE_A, true)
+                              KeyInjector.key(KeyEvent.KEYCODE_A, false)
+                          }, 5000L + i * 300L)
+                      }
+                  })
+                  col.addView(btn("Durumu yenile") { refresh() })
+                  val sv = ScrollView(this); sv.addView(col); setContentView(sv)
+                  refresh()
               }
 
-              override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-                  if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) initBt()
-                  else setStatus("Bluetooth izni verilmedi. Uygulamayı kapatıp tekrar aç ve izin ver.")
+              override fun onResume() { super.onResume(); refresh() }
+
+              private fun refresh() {
+                  val run = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
+                  val perm = try { run && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
+                  status.text = "Shizuku: " + (if (run) "çalışıyor ✓" else "çalışmıyor ✗") +
+                      "\nİzin: " + (if (perm) "verildi ✓" else "yok ✗")
+              }
+          }
+          KM_EOF
+          mkdir -p app/src/main/java/com/klavyemouse/shz
+          cat > app/src/main/java/com/klavyemouse/shz/MouseService.kt <<'KM_EOF'
+          package com.klavyemouse.shz
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Context
+          import android.graphics.*
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.*
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          import kotlin.math.abs
+
+          class MouseService : AccessibilityService() {
+              private lateinit var wm: WindowManager
+              private lateinit var ui: Context
+              private var cursor: View? = null
+              private var panel: LinearLayout? = null
+              private lateinit var cursorLp: WindowManager.LayoutParams
+              private lateinit var panelLp: WindowManager.LayoutParams
+              private var cx = 300f
+              private var cy = 600f
+              private val handler = Handler(Looper.getMainLooper())
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun lp(w: Int, h: Int, flags: Int) = WindowManager.LayoutParams(
+                  w, h, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT
+              ).apply { gravity = Gravity.TOP or Gravity.START }
+
+              override fun onServiceConnected() {
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  ui = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+                  addCursor()
+                  addPanel()
+                  val err = KeyInjector.init()
+                  Toast.makeText(this, err ?: "Gerçek tuş modu hazır ✓", Toast.LENGTH_LONG).show()
               }
 
-              override fun onResume() {
-                  super.onResume()
-                  if (host == null) refreshList()
-              }
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
 
               override fun onDestroy() {
-                  try { hid?.unregisterApp() } catch (_: Exception) {}
-                  try { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) } catch (_: Exception) {}
+                  try { cursor?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
+                  try { panel?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
                   super.onDestroy()
               }
 
-              private val cb = object : BluetoothHidDevice.Callback() {
-                  override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-                      setStatus(
-                          if (registered) "Hazır. Aşağıdan tableti seçip bağlan."
-                          else "Kayıt başarısız. Bu telefon Bluetooth klavye modunu desteklemiyor olabilir."
-                      )
-                  }
-
-                  override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
-                      runOnUiThread {
-                          if (state == BluetoothProfile.STATE_CONNECTED) {
-                              host = device
-                              showController()
-                          } else if (state == BluetoothProfile.STATE_DISCONNECTED) {
-                              if (host == device) {
-                                  host = null
-                                  pressed.clear(); mods = 0; mbtn = 0
-                                  showConnect()
-                                  setStatus("Bağlantı koptu.")
-                              }
+              private fun addCursor() {
+                  val v = object : View(ui) {
+                      override fun onDraw(c: Canvas) {
+                          val p = Path().apply {
+                              moveTo(0f, 0f); lineTo(0f, height * 0.85f); lineTo(width * 0.28f, height * 0.65f)
+                              lineTo(width * 0.5f, height.toFloat()); lineTo(width * 0.65f, height * 0.92f)
+                              lineTo(width * 0.45f, height * 0.58f); lineTo(width * 0.8f, height * 0.58f); close()
                           }
+                          val f = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+                          val s = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 3f }
+                          c.drawPath(p, f); c.drawPath(p, s)
                       }
                   }
+                  cursorLp = lp(dp(26), dp(26),
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                  cursorLp.x = cx.toInt(); cursorLp.y = cy.toInt()
+                  wm.addView(v, cursorLp)
+                  cursor = v
               }
 
-              private fun initBt() {
-                  val a = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-                  adapter = a
-                  if (a == null) { setStatus("Bu cihazda Bluetooth yok."); return }
-                  if (!a.isEnabled) { setStatus("Önce Bluetooth'u aç, sonra uygulamayı yeniden başlat."); return }
-                  val ok = a.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
-                      override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                          if (profile == BluetoothProfile.HID_DEVICE) {
-                              val p = proxy as BluetoothHidDevice
-                              hid = p
-                              val sdp = BluetoothHidDeviceAppSdpSettings(
-                                  "Klavye Mouse", "Klavye ve Mouse", "KM",
-                                  BluetoothHidDevice.SUBCLASS1_COMBO, DESC
-                              )
-                              val reg = p.registerApp(sdp, null, null, mainExecutor, cb)
-                              if (!reg) setStatus("Kayıt başarısız. Bu telefon desteklemiyor olabilir.")
-                          }
+              private fun moveCursor(dx: Float, dy: Float) {
+                  val m = resources.displayMetrics
+                  cx = (cx + dx).coerceIn(0f, m.widthPixels - 1f)
+                  cy = (cy + dy).coerceIn(0f, m.heightPixels - 1f)
+                  cursorLp.x = cx.toInt(); cursorLp.y = cy.toInt()
+                  cursor?.let { wm.updateViewLayout(it, cursorLp) }
+              }
+
+              private fun tap(dur: Long) {
+                  val path = Path().apply { moveTo(cx, cy) }
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, dur)).build()
+                  dispatchGesture(g, null, null)
+              }
+
+              private fun btn(label: String, w: Float = 1f, h: Int = 36, onClick: () -> Unit) = Button(ui).apply {
+                  text = label; textSize = 12f; isAllCaps = false
+                  setPadding(0, 0, 0, 0); minWidth = 0; minimumWidth = 0; minHeight = 0; minimumHeight = 0
+                  layoutParams = LinearLayout.LayoutParams(0, dp(h), w).apply { setMargins(dp(1), dp(1), dp(1), dp(1)) }
+                  setOnClickListener { onClick() }
+              }
+
+              /** Basili tutunca gercek klavye tusu asagi, birakinca yukari gonderir. */
+              private fun keyBtn(label: String, code: Int, w: Float = 1f) = btn(label, w, 40) {}.apply {
+                  setOnTouchListener { v, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { v.isPressed = true; KeyInjector.key(code, true) }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.isPressed = false; KeyInjector.key(code, false) }
                       }
-
-                      override fun onServiceDisconnected(profile: Int) {
-                          if (profile == BluetoothProfile.HID_DEVICE) hid = null
-                      }
-                  }, BluetoothProfile.HID_DEVICE)
-                  if (!ok) setStatus("Bu telefon Bluetooth klavye modunu desteklemiyor.")
-                  refreshList()
+                      true
+                  }
               }
 
-              private fun setStatus(t: String) { runOnUiThread { statusTv?.text = t } }
-
-              private fun tv(t: String, size: Float = 15f, bold: Boolean = false) = TextView(this).apply {
-                  text = t; textSize = size; setTextColor(Color.WHITE)
-                  if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
-                  setPadding(0, dp(6), 0, dp(6))
+              private fun row(vararg v: View) = LinearLayout(ui).apply {
+                  orientation = LinearLayout.HORIZONTAL
+                  v.forEach { addView(it) }
               }
 
-              private fun btn(t: String, on: () -> Unit) = Button(this).apply {
-                  text = t; isAllCaps = false
-                  setOnClickListener { on() }
-              }
-
-              private fun showConnect() {
-                  root.removeAllViews()
-                  val col = LinearLayout(this).apply {
+              private fun addPanel() {
+                  val p = LinearLayout(ui).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(20), dp(16), dp(20), dp(16))
-                  }
-                  col.addView(tv("Klavye Mouse BT", 22f, true))
-                  statusTv = tv("Hazırlanıyor...")
-                  col.addView(statusTv)
-                  col.addView(tv(
-                      "Bu telefon, oyun oynayacağın tablete Bluetooth klavye ve mouse olur.\n" +
-                      "1) Aşağıdaki 'Telefonu görünür yap' düğmesine bas.\n" +
-                      "2) TABLETTE Bluetooth ayarlarını aç, bu telefonu bulup eşleştir.\n" +
-                      "3) Buraya dönüp 'Listeyi yenile' de, listeden tableti seç."
-                  ))
-                  col.addView(btn("Telefonu görünür yap") {
-                      startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
-                          .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300))
-                  })
-                  col.addView(btn("Bluetooth ayarlarını aç") { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) })
-                  col.addView(btn("Listeyi yenile") { refreshList() })
-                  listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                  col.addView(listBox)
-                  val sv = ScrollView(this)
-                  sv.addView(col)
-                  root.addView(sv)
-                  refreshList()
-              }
-
-              private fun refreshList() {
-                  val box = listBox ?: return
-                  box.removeAllViews()
-                  val devs = try { adapter?.bondedDevices } catch (_: Exception) { null }
-                  if (devs.isNullOrEmpty()) {
-                      box.addView(tv("Eşleşmiş cihaz yok. Önce tabletle eşleştir."))
-                      return
-                  }
-                  devs.forEach { d ->
-                      box.addView(btn("Bağlan: " + (d.name ?: d.address)) {
-                          setStatus("Bağlanıyor: " + (d.name ?: d.address))
-                          hid?.connect(d)
-                      })
-                  }
-              }
-
-              // ---- HID rapor gonderme ----
-              private fun sendKb() {
-                  val d = host ?: return
-                  val data = ByteArray(8)
-                  data[0] = mods.toByte()
-                  for (i in 0 until minOf(6, pressed.size)) data[2 + i] = pressed[i].toByte()
-                  hid?.sendReport(d, 1, data)
-              }
-
-              private fun sendMouse(dx: Int, dy: Int, wheel: Int) {
-                  val d = host ?: return
-                  hid?.sendReport(d, 2, byteArrayOf(mbtn.toByte(), dx.toByte(), dy.toByte(), wheel.toByte()))
-              }
-
-              private fun moveMouse(x: Int, y: Int) {
-                  var rx = x; var ry = y
-                  while (rx != 0 || ry != 0) {
-                      val sx = rx.coerceIn(-127, 127); val sy = ry.coerceIn(-127, 127)
-                      sendMouse(sx, sy, 0)
-                      rx -= sx; ry -= sy
-                  }
-              }
-
-              private fun press(usage: Int, mod: Int) {
-                  if (mod != 0) mods = mods or mod
-                  else if (usage !in pressed && pressed.size < 6) pressed.add(usage)
-                  sendKb()
-              }
-
-              private fun release(usage: Int, mod: Int) {
-                  if (mod != 0) mods = mods and mod.inv()
-                  else pressed.remove(usage)
-                  sendKb()
-              }
-
-              // ---- Kontrol ekrani ----
-              private fun key(label: String, usage: Int = 0, mod: Int = 0, w: Float = 1f) = Button(this).apply {
-                  text = label; isAllCaps = false; textSize = 14f
-                  setPadding(0, 0, 0, 0); minWidth = 0; minimumWidth = 0
-                  layoutParams = LinearLayout.LayoutParams(0, MATCH, w).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-                  setOnTouchListener { v, e ->
-                      when (e.actionMasked) {
-                          MotionEvent.ACTION_DOWN -> { v.isPressed = true; press(usage, mod) }
-                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.isPressed = false; release(usage, mod) }
-                      }
-                      true
-                  }
-              }
-
-              private fun letter(c: Char) = key(c.uppercase(), 4 + (c - 'a'))
-
-              private fun mouseBtn(label: String, bit: Int, w: Float = 1f) = Button(this).apply {
-                  text = label; isAllCaps = false; textSize = 13f
-                  setPadding(0, 0, 0, 0); minWidth = 0; minimumWidth = 0
-                  layoutParams = LinearLayout.LayoutParams(0, MATCH, w).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-                  setOnTouchListener { v, e ->
-                      when (e.actionMasked) {
-                          MotionEvent.ACTION_DOWN -> { v.isPressed = true; mbtn = mbtn or bit; sendMouse(0, 0, 0) }
-                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.isPressed = false; mbtn = mbtn and bit.inv(); sendMouse(0, 0, 0) }
-                      }
-                      true
-                  }
-              }
-
-              private fun wheelBtn(label: String, dir: Int) = Button(this).apply {
-                  text = label; isAllCaps = false
-                  setPadding(0, 0, 0, 0); minWidth = 0; minimumWidth = 0
-                  layoutParams = LinearLayout.LayoutParams(0, MATCH, 0.6f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-                  setOnClickListener { sendMouse(0, 0, dir) }
-              }
-
-              private fun showController() {
-                  root.removeAllViews()
-                  val main = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
                       setPadding(dp(6), dp(6), dp(6), dp(6))
+                      background = GradientDrawable().apply { setColor(0xE6222222.toInt()); cornerRadius = dp(12).toFloat() }
                   }
-                  val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                  val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                  main.addView(left, LinearLayout.LayoutParams(0, MATCH, 1.2f))
-                  main.addView(right, LinearLayout.LayoutParams(0, MATCH, 1f))
+                  panelLp = lp(dp(300), WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                  panelLp.x = dp(20); panelLp.y = dp(80)
 
-                  fun addRow(vararg v: View) {
-                      val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                      v.forEach { r.addView(it) }
-                      left.addView(r, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  val title = TextView(ui).apply {
+                      text = "✥ Klavye Mouse"; setTextColor(Color.WHITE); textSize = 13f
+                      gravity = Gravity.CENTER_VERTICAL
+                      layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f)
                   }
-                  val digits = (1..9).map { key(it.toString(), 0x1E + (it - 1)) }.toTypedArray()
-                  addRow(key("Esc", 0x29, w = 1.4f), *digits)
-                  addRow(letter('q'), letter('w'), letter('e'), letter('r'), letter('t'), letter('f'))
-                  addRow(key("Shift", mod = 0x02, w = 1.5f), letter('a'), letter('s'), letter('d'), key("Ctrl", mod = 0x01, w = 1.3f))
-                  addRow(key("Boşluk", 0x2C, w = 3f), key("Enter", 0x28, w = 1.5f), key("Tab", 0x2B, w = 1f), letter('c'), letter('x'))
-
-                  val pad = View(this).apply {
-                      background = GradientDrawable().apply { setColor(0xFF2A2A2A.toInt()); cornerRadius = dp(10).toFloat() }
-                  }
-                  var lx = 0f; var ly = 0f; var ax = 0f; var ay = 0f; var moved = 0f; var t0 = 0L
-                  pad.setOnTouchListener { _, e ->
-                      when (e.actionMasked) {
-                          MotionEvent.ACTION_DOWN -> { lx = e.x; ly = e.y; moved = 0f; t0 = e.eventTime }
+                  var ox = 0f; var oy = 0f; var sx = 0; var sy = 0
+                  title.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { ox = e.rawX; oy = e.rawY; sx = panelLp.x; sy = panelLp.y }
                           MotionEvent.ACTION_MOVE -> {
-                              val dx = (e.x - lx) * 1.8f; val dy = (e.y - ly) * 1.8f
-                              lx = e.x; ly = e.y
-                              moved += abs(dx) + abs(dy)
-                              ax += dx; ay += dy
-                              val ix = ax.toInt(); val iy = ay.toInt()
-                              ax -= ix; ay -= iy
-                              moveMouse(ix, iy)
-                          }
-                          MotionEvent.ACTION_UP -> {
-                              if (moved < dp(14) && e.eventTime - t0 < 220) {
-                                  mbtn = mbtn or 1; sendMouse(0, 0, 0)
-                                  handler.postDelayed({ mbtn = mbtn and 1.inv(); sendMouse(0, 0, 0) }, 40)
-                              }
+                              panelLp.x = sx + (e.rawX - ox).toInt(); panelLp.y = sy + (e.rawY - oy).toInt()
+                              wm.updateViewLayout(p, panelLp)
                           }
                       }
                       true
                   }
-                  right.addView(pad, LinearLayout.LayoutParams(MATCH, 0, 2.2f))
-                  val br = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                  br.addView(mouseBtn("Sol (vur)", 1, 1.3f))
-                  br.addView(mouseBtn("Sağ (koy)", 2, 1.3f))
-                  br.addView(wheelBtn("▲", 1))
-                  br.addView(wheelBtn("▼", -1))
-                  right.addView(br, LinearLayout.LayoutParams(MATCH, 0, 1f))
-                  val kes = btn("Bağlantıyı kes") { host?.let { hid?.disconnect(it) } }
-                  right.addView(kes, LinearLayout.LayoutParams(MATCH, 0, 0.7f))
-                  root.addView(main)
+                  val bar = row(title, btn("✕", 0.5f) { disableSelf() })
+
+                  val pad = View(ui).apply {
+                      background = GradientDrawable().apply { setColor(0xFF3A3A3A.toInt()); cornerRadius = dp(8).toFloat() }
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(90))
+                          .apply { setMargins(dp(1), dp(3), dp(1), dp(3)) }
+                  }
+                  var lx = 0f; var ly = 0f; var moved = 0f; var t0 = 0L
+                  pad.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { lx = e.rawX; ly = e.rawY; moved = 0f; t0 = e.eventTime }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = e.rawX - lx; val dy = e.rawY - ly
+                              lx = e.rawX; ly = e.rawY; moved += abs(dx) + abs(dy)
+                              moveCursor(dx * 2f, dy * 2f)
+                          }
+                          MotionEvent.ACTION_UP -> if (moved < dp(8) && e.eventTime - t0 < 200) tap(50)
+                      }
+                      true
+                  }
+                  val clicks = row(
+                      btn("Tık") { tap(50) },
+                      btn("Çift tık") { tap(40); handler.postDelayed({ tap(40) }, 120) },
+                      btn("Basılı tut") { tap(600) }
+                  )
+
+                  val wasd = row(
+                      keyBtn("W", KeyEvent.KEYCODE_W), keyBtn("A", KeyEvent.KEYCODE_A),
+                      keyBtn("S", KeyEvent.KEYCODE_S), keyBtn("D", KeyEvent.KEYCODE_D)
+                  )
+                  val keys2 = row(
+                      keyBtn("Boşluk", KeyEvent.KEYCODE_SPACE, 1.6f), keyBtn("Shift", KeyEvent.KEYCODE_SHIFT_LEFT, 1.2f),
+                      keyBtn("Ctrl", KeyEvent.KEYCODE_CTRL_LEFT, 1.1f), keyBtn("E", KeyEvent.KEYCODE_E)
+                  )
+                  val keys3 = row(
+                      keyBtn("Q", KeyEvent.KEYCODE_Q), keyBtn("F", KeyEvent.KEYCODE_F),
+                      keyBtn("T", KeyEvent.KEYCODE_T), keyBtn("Esc", KeyEvent.KEYCODE_ESCAPE, 1.2f)
+                  )
+                  val nums = row(*(1..9).map { n -> keyBtn(n.toString(), KeyEvent.KEYCODE_1 + (n - 1)) }.toTypedArray())
+
+                  p.addView(bar); p.addView(pad); p.addView(clicks)
+                  p.addView(wasd); p.addView(keys2); p.addView(keys3); p.addView(nums)
+                  wm.addView(p, panelLp)
+                  panel = p
               }
           }
+          KM_EOF
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'KM_EOF'
+          <resources>
+              <string name="desc">Ekranda yüzen klavye ve mouse paneli gösterir.</string>
+          </resources>
+          KM_EOF
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/accessibility_config.xml <<'KM_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:notificationTimeout="100"
+              android:description="@string/desc"/>
           KM_EOF
           cat > build.gradle.kts <<'KM_EOF'
           plugins {
@@ -411,6 +412,7 @@ jobs:
           cat > gradle.properties <<'KM_EOF'
           org.gradle.jvmargs=-Xmx2048m
           android.nonTransitiveRClass=true
+          android.useAndroidX=true
           KM_EOF
           mkdir -p gradle/wrapper
           cat > gradle/wrapper/gradle-wrapper.properties <<'KM_EOF'
@@ -419,7 +421,7 @@ jobs:
           cat > settings.gradle.kts <<'KM_EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-          rootProject.name = "KlavyeMouseBT"
+          rootProject.name = "KlavyeMouseShz"
           include(":app")
           KM_EOF
       - name: Derle
