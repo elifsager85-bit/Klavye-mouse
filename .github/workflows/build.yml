@@ -235,6 +235,7 @@ jobs:
           import android.graphics.drawable.GradientDrawable
           import android.os.Handler
           import android.os.Looper
+          import android.util.DisplayMetrics
           import android.view.*
           import android.view.accessibility.AccessibilityEvent
           import android.widget.Button
@@ -275,6 +276,13 @@ jobs:
               private var holdX = 0f
               private var holdY = 0f
 
+              @Suppress("DEPRECATION")
+              private fun screen(): IntArray {
+                  val dm = DisplayMetrics()
+                  wm.defaultDisplay.getRealMetrics(dm)
+                  return intArrayOf(dm.widthPixels, dm.heightPixels)
+              }
+
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
               private fun lp(w: Int, h: Int, flags: Int) = WindowManager.LayoutParams(
@@ -284,8 +292,6 @@ jobs:
               override fun onServiceConnected() {
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
                   ui = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
-                  val m = resources.displayMetrics
-                  lookX = m.widthPixels * 0.72f; lookY = m.heightPixels * 0.5f
                   addCursor()
                   addPanel()
                   cursor?.visibility = View.INVISIBLE
@@ -324,9 +330,9 @@ jobs:
               }
 
               private fun moveCursor(dx: Float, dy: Float) {
-                  val m = resources.displayMetrics
-                  cx = (cx + dx).coerceIn(0f, m.widthPixels - 1f)
-                  cy = (cy + dy).coerceIn(0f, m.heightPixels - 1f)
+                  val sc = screen()
+                  cx = (cx + dx).coerceIn(0f, sc[0] - 1f)
+                  cy = (cy + dy).coerceIn(0f, sc[1] - 1f)
                   cursorLp.x = cx.toInt(); cursorLp.y = cy.toInt()
                   cursor?.let { wm.updateViewLayout(it, cursorLp) }
               }
@@ -338,8 +344,8 @@ jobs:
                   dispatchGesture(g, null, null)
               }
 
-              private fun centerX() = resources.displayMetrics.widthPixels / 2f
-              private fun centerY() = resources.displayMetrics.heightPixels / 2f
+              private fun centerX() = screen()[0] / 2f
+              private fun centerY() = screen()[1] / 2f
 
               // ---------- Kamera: surekli parmak surukleme ----------
               private fun dispatchLook(st: GestureDescription.StrokeDescription, after: (() -> Unit)? = null) {
@@ -359,6 +365,8 @@ jobs:
 
               private fun lookStart() {
                   if (holdActive) return
+                  val sc0 = screen()
+                  lookX = sc0[0] * 0.72f; lookY = sc0[1] * 0.5f
                   lookCx = lookX; lookCy = lookY; pendDx = 0f; pendDy = 0f
                   val path = Path().apply { moveTo(lookCx, lookCy) }
                   val st = GestureDescription.StrokeDescription(path, 0, 20, true)
@@ -369,11 +377,11 @@ jobs:
               private fun lookPump() {
                   if (!lookActive || lookBusy || holdActive) return
                   val prev = lookStroke ?: return
-                  val m = resources.displayMetrics
+                  val sc = screen()
                   val nx = lookCx + pendDx
                   val ny = lookCy + pendDy
                   pendDx = 0f; pendDy = 0f
-                  val out = nx < m.widthPixels * 0.4f || nx > m.widthPixels - dp(10) || ny < dp(40) || ny > m.heightPixels - dp(10)
+                  val out = nx < sc[0] * 0.4f || nx > sc[0] - dp(10) || ny < dp(40) || ny > sc[1] - dp(10)
                   if (out) {
                       val path = Path().apply { moveTo(lookCx, lookCy) }
                       val st = prev.continueStroke(path, 0, 20, false)
