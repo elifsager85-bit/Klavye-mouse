@@ -152,6 +152,10 @@ jobs:
 
               fun mouseBtn(mask: Int, down: Boolean, x: Float, y: Float) =
                   motion(if (down) MotionEvent.ACTION_DOWN else MotionEvent.ACTION_UP, InputDevice.SOURCE_MOUSE, x, y, 0f, 0f, if (down) mask else 0)
+
+              /** Oyun (imleç kilitli) modunda fare tuşu: goreli kaynak, koordinat sifir. */
+              fun mouseBtnRel(mask: Int, down: Boolean) =
+                  motion(if (down) MotionEvent.ACTION_DOWN else MotionEvent.ACTION_UP, InputDevice.SOURCE_MOUSE_RELATIVE, 0f, 0f, 0f, 0f, if (down) mask else 0)
           }
           KM_EOF
           mkdir -p app/src/main/java/com/klavyemouse/shz
@@ -442,6 +446,11 @@ jobs:
                   }
               }
 
+              private fun clickRel() {
+                  KeyInjector.mouseBtnRel(1, true)
+                  handler.postDelayed({ KeyInjector.mouseBtnRel(1, false) }, 50)
+              }
+
               private fun click(x: Float, y: Float) {
                   KeyInjector.mouseBtn(1, true, x, y)
                   handler.postDelayed({ KeyInjector.mouseBtn(1, false, x, y) }, 50)
@@ -475,13 +484,15 @@ jobs:
                       when (e.action) {
                           MotionEvent.ACTION_DOWN -> {
                               v.isPressed = true
-                              if (real) KeyInjector.mouseBtn(mask, true, px, py)
+                              if (mode == 2) KeyInjector.mouseBtnRel(mask, true)
+                              else if (real) KeyInjector.mouseBtn(mask, true, px, py)
                               else if (left) holdStart(px, py)
                               else tapAt(px, py, 60)
                           }
                           MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                               v.isPressed = false
-                              if (real) KeyInjector.mouseBtn(mask, false, px, py)
+                              if (mode == 2) KeyInjector.mouseBtnRel(mask, false)
+                              else if (real) KeyInjector.mouseBtn(mask, false, px, py)
                               else if (left) holdStop()
                           }
                       }
@@ -542,9 +553,8 @@ jobs:
                                   0 -> { pendDx += dx * sens; pendDy += dy * sens; lookPump() }
                                   1 -> { moveCursor(dx * 2f, dy * 2f); KeyInjector.mouseAbs(cx, cy) }
                                   else -> {
-                                      val mx = centerX(); val my = centerY()
-                                      KeyInjector.mouseRel(mx + dx * sens, my + dy * sens, dx * sens, dy * sens)
-                                      KeyInjector.mouseRel(mx, my, 0f, 0f)
+                                      val ddx = dx * sens; val ddy = dy * sens
+                                      KeyInjector.mouseRel(ddx, ddy, ddx, ddy)
                                   }
                               }
                           }
@@ -563,7 +573,7 @@ jobs:
                       cursor?.visibility = if (mode == 1) View.VISIBLE else View.INVISIBLE
                   }
                   val clicks = row(modeBtn, mouseHold("Vur", true), mouseHold("Koy", false), btn("Tık", 1f, 40) {
-                      when (mode) { 2 -> click(centerX(), centerY()); 1 -> click(cx, cy); else -> tapAt(centerX(), centerY(), 50) }
+                      when (mode) { 2 -> clickRel(); 1 -> click(cx, cy); else -> tapAt(centerX(), centerY(), 50) }
                   })
 
                   val wasd = row(
