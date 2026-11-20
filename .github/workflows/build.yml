@@ -256,6 +256,7 @@ jobs:
 
               // 0 = Kamera (dokunuşla bakma), 1 = Menü (imleç + dokunma), 2 = Fare (gerçek fare olayı)
               private var mode = 0
+              private var sens = 0.5f
 
               // Kamera (surekli surukleme)
               private var lookX = 0f
@@ -528,7 +529,7 @@ jobs:
                               val dx = e.rawX - lx; val dy = e.rawY - ly
                               lx = e.rawX; ly = e.rawY; moved += abs(dx) + abs(dy)
                               when (mode) {
-                                  0 -> { pendDx += dx * 2.5f; pendDy += dy * 2.5f; lookPump() }
+                                  0 -> { pendDx += dx * sens; pendDy += dy * sens; lookPump() }
                                   1 -> moveCursor(dx * 2f, dy * 2f)
                                   else -> KeyInjector.mouseRel(cx, cy, dx * 1.5f, dy * 1.5f)
                               }
@@ -565,7 +566,14 @@ jobs:
                   )
                   val nums = row(*(1..9).map { n -> keyBtn(n.toString(), KeyEvent.KEYCODE_1 + (n - 1)) }.toTypedArray())
 
-                  p.addView(bar); p.addView(pad); p.addView(clicks)
+                  lateinit var spd: Button
+                  spd = btn("Hız: " + String.format("%.2f", sens), 1.4f, 34) {}
+                  val sensRow = row(
+                      btn("Hız −", 1f, 34) { sens = (sens / 1.4f).coerceAtLeast(0.05f); spd.text = "Hız: " + String.format("%.2f", sens) },
+                      spd,
+                      btn("Hız +", 1f, 34) { sens = (sens * 1.4f).coerceAtMost(4f); spd.text = "Hız: " + String.format("%.2f", sens) }
+                  )
+                  p.addView(bar); p.addView(pad); p.addView(clicks); p.addView(sensRow)
                   p.addView(wasd); p.addView(keys2); p.addView(keys3); p.addView(nums)
                   wm.addView(p, panelLp)
                   panel = p
