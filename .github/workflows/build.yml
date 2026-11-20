@@ -89,6 +89,7 @@ jobs:
           import android.view.InputDevice
           import android.view.InputEvent
           import android.view.KeyEvent
+          import android.view.MotionEvent
           import org.lsposed.hiddenapibypass.HiddenApiBypass
           import rikka.shizuku.Shizuku
           import rikka.shizuku.ShizukuBinderWrapper
@@ -127,6 +128,30 @@ jobs:
                   )
                   try { inject?.invoke(im, ev, 0) } catch (_: Throwable) {}
               }
+
+              private fun motion(action: Int, source: Int, x: Float, y: Float, dx: Float, dy: Float, buttons: Int) {
+                  if (init() != null) return
+                  val now = SystemClock.uptimeMillis()
+                  val props = arrayOf(MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE })
+                  val coords = arrayOf(MotionEvent.PointerCoords().apply {
+                      this.x = x; this.y = y
+                      pressure = if (buttons != 0) 1f else 0f
+                      setAxisValue(MotionEvent.AXIS_RELATIVE_X, dx)
+                      setAxisValue(MotionEvent.AXIS_RELATIVE_Y, dy)
+                  })
+                  val ev = MotionEvent.obtain(now, now, action, 1, props, coords, 0, buttons, 1f, 1f, -1, 0, source, 0)
+                  try { inject?.invoke(im, ev, 0) } catch (_: Throwable) {}
+                  ev.recycle()
+              }
+
+              fun mouseRel(x: Float, y: Float, dx: Float, dy: Float) =
+                  motion(MotionEvent.ACTION_MOVE, InputDevice.SOURCE_MOUSE_RELATIVE, x, y, dx, dy, 0)
+
+              fun mouseAbs(x: Float, y: Float) =
+                  motion(MotionEvent.ACTION_HOVER_MOVE, InputDevice.SOURCE_MOUSE, x, y, 0f, 0f, 0)
+
+              fun mouseBtn(mask: Int, down: Boolean, x: Float, y: Float) =
+                  motion(if (down) MotionEvent.ACTION_DOWN else MotionEvent.ACTION_UP, InputDevice.SOURCE_MOUSE, x, y, 0f, 0f, if (down) mask else 0)
           }
           KM_EOF
           mkdir -p app/src/main/java/com/klavyemouse/shz
@@ -229,6 +254,26 @@ jobs:
               private var cy = 600f
               private val handler = Handler(Looper.getMainLooper())
 
+              // 0 = Kamera (dokunuşla bakma), 1 = Menü (imleç + dokunma), 2 = Fare (gerçek fare olayı)
+              private var mode = 0
+
+              // Kamera (surekli surukleme)
+              private var lookX = 0f
+              private var lookY = 0f
+              private var lookCx = 0f
+              private var lookCy = 0f
+              private var pendDx = 0f
+              private var pendDy = 0f
+              private var lookActive = false
+              private var lookBusy = false
+              private var lookStroke: GestureDescription.StrokeDescription? = null
+
+              // Basili tutma (vurma)
+              private var holdActive = false
+              private var holdStroke: GestureDescription.StrokeDescription? = null
+              private var holdX = 0f
+              private var holdY = 0f
+
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
               private fun lp(w: Int, h: Int, flags: Int) = WindowManager.LayoutParams(
@@ -238,8 +283,11 @@ jobs:
               override fun onServiceConnected() {
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
                   ui = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+                  val m = resources.displayMetrics
+                  lookX = m.widthPixels * 0.72f; lookY = m.heightPixels * 0.5f
                   addCursor()
                   addPanel()
+                  cursor?.visibility = View.INVISIBLE
                   val err = KeyInjector.init()
                   Toast.makeText(this, err ?: "Gerçek tuş modu hazır ✓", Toast.LENGTH_LONG).show()
               }
@@ -282,13 +330,115 @@ jobs:
                   cursor?.let { wm.updateViewLayout(it, cursorLp) }
               }
 
-              private fun tap(dur: Long) {
-                  val path = Path().apply { moveTo(cx, cy) }
+              private fun tapAt(x: Float, y: Float, dur: Long) {
+                  val path = Path().apply { moveTo(x, y) }
                   val g = GestureDescription.Builder()
                       .addStroke(GestureDescription.StrokeDescription(path, 0, dur)).build()
                   dispatchGesture(g, null, null)
               }
 
+              private fun centerX() = resources.displayMetrics.widthPixels / 2f
+              private fun centerY() = resources.displayMetrics.heightPixels / 2f
+
+              // ---------- Kamera: surekli parmak surukleme ----------
+              private fun dispatchLook(st: GestureDescription.StrokeDescription, after: (() -> Unit)? = null) {
+                  lookBusy = true
+                  dispatchGesture(GestureDescription.Builder().addStroke(st).build(), object : GestureResultCallback() {
+                      override fun onCompleted(g: GestureDescription?) {
+                          lookBusy = false
+                          if (after != null) after() else lookPump()
+                      }
+                      override fun onCancelled(g: GestureDescription?) {
+                          lookBusy = false
+                          lookStroke = null
+                          if (lookActive && !holdActive) handler.postDelayed({ if (lookActive && !holdActive) lookStart() }, 50)
+                      }
+                  }, null)
+              }
+
+              private fun lookStart() {
+                  if (holdActive) return
+                  lookCx = lookX; lookCy = lookY; pendDx = 0f; pendDy = 0f
+                  val path = Path().apply { moveTo(lookCx, lookCy) }
+                  val st = GestureDescription.StrokeDescription(path, 0, 20, true)
+                  lookStroke = st
+                  dispatchLook(st)
+              }
+
+              private fun lookPump() {
+                  if (!lookActive || lookBusy || holdActive) return
+                  val prev = lookStroke ?: return
+                  val m = resources.displayMetrics
+                  val nx = lookCx + pendDx
+                  val ny = lookCy + pendDy
+                  pendDx = 0f; pendDy = 0f
+                  val out = nx < m.widthPixels * 0.4f || nx > m.widthPixels - dp(10) || ny < dp(40) || ny > m.heightPixels - dp(10)
+                  if (out) {
+                      val path = Path().apply { moveTo(lookCx, lookCy) }
+                      val st = prev.continueStroke(path, 0, 20, false)
+                      lookStroke = null
+                      dispatchLook(st) { if (lookActive) lookStart() }
+                      return
+                  }
+                  val path = Path().apply {
+                      moveTo(lookCx, lookCy)
+                      if (nx != lookCx || ny != lookCy) lineTo(nx, ny)
+                  }
+                  val st = prev.continueStroke(path, 0, 25, true)
+                  lookCx = nx; lookCy = ny
+                  lookStroke = st
+                  dispatchLook(st)
+              }
+
+              private fun lookEnd() {
+                  lookActive = false
+                  val prev = lookStroke
+                  lookStroke = null
+                  if (prev != null) {
+                      val path = Path().apply { moveTo(lookCx, lookCy) }
+                      val st = prev.continueStroke(path, 0, 20, false)
+                      dispatchGesture(GestureDescription.Builder().addStroke(st).build(), null, null)
+                  }
+              }
+
+              // ---------- Basili tutma (blok kirma) ----------
+              private fun holdSend(s: GestureDescription.StrokeDescription) {
+                  dispatchGesture(GestureDescription.Builder().addStroke(s).build(), object : GestureResultCallback() {
+                      override fun onCompleted(g: GestureDescription?) {
+                          if (holdActive) {
+                              val n = s.continueStroke(Path().apply { moveTo(holdX, holdY) }, 0, 60, true)
+                              holdStroke = n
+                              holdSend(n)
+                          }
+                      }
+                      override fun onCancelled(g: GestureDescription?) { holdStroke = null }
+                  }, null)
+              }
+
+              private fun holdStart(x: Float, y: Float) {
+                  lookActive = false; lookStroke = null
+                  holdX = x; holdY = y; holdActive = true
+                  val s = GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, 60, true)
+                  holdStroke = s
+                  holdSend(s)
+              }
+
+              private fun holdStop() {
+                  holdActive = false
+                  val prev = holdStroke
+                  holdStroke = null
+                  if (prev != null) {
+                      val st = prev.continueStroke(Path().apply { moveTo(holdX, holdY) }, 0, 20, false)
+                      dispatchGesture(GestureDescription.Builder().addStroke(st).build(), null, null)
+                  }
+              }
+
+              private fun click() {
+                  KeyInjector.mouseBtn(1, true, cx, cy)
+                  handler.postDelayed({ KeyInjector.mouseBtn(1, false, cx, cy) }, 50)
+              }
+
+              // ---------- Arayuz ----------
               private fun btn(label: String, w: Float = 1f, h: Int = 36, onClick: () -> Unit) = Button(ui).apply {
                   text = label; textSize = 12f; isAllCaps = false
                   setPadding(0, 0, 0, 0); minWidth = 0; minimumWidth = 0; minHeight = 0; minimumHeight = 0
@@ -296,12 +446,33 @@ jobs:
                   setOnClickListener { onClick() }
               }
 
-              /** Basili tutunca gercek klavye tusu asagi, birakinca yukari gonderir. */
               private fun keyBtn(label: String, code: Int, w: Float = 1f) = btn(label, w, 40) {}.apply {
                   setOnTouchListener { v, e ->
                       when (e.action) {
                           MotionEvent.ACTION_DOWN -> { v.isPressed = true; KeyInjector.key(code, true) }
                           MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.isPressed = false; KeyInjector.key(code, false) }
+                      }
+                      true
+                  }
+              }
+
+              /** Vur (sol): basili tut. Koy (sag): dokun. Moda gore dokunus ya da gercek fare. */
+              private fun mouseHold(label: String, left: Boolean, w: Float = 1f) = btn(label, w, 40) {}.apply {
+                  setOnTouchListener { v, e ->
+                      val px = if (mode == 1) cx else centerX()
+                      val py = if (mode == 1) cy else centerY()
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              v.isPressed = true
+                              if (mode == 2) KeyInjector.mouseBtn(if (left) 1 else 2, true, cx, cy)
+                              else if (left) holdStart(px, py)
+                              else tapAt(px, py, 60)
+                          }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                              v.isPressed = false
+                              if (mode == 2) KeyInjector.mouseBtn(if (left) 1 else 2, false, cx, cy)
+                              else if (left) holdStop()
+                          }
                       }
                       true
                   }
@@ -349,21 +520,36 @@ jobs:
                   var lx = 0f; var ly = 0f; var moved = 0f; var t0 = 0L
                   pad.setOnTouchListener { _, e ->
                       when (e.action) {
-                          MotionEvent.ACTION_DOWN -> { lx = e.rawX; ly = e.rawY; moved = 0f; t0 = e.eventTime }
+                          MotionEvent.ACTION_DOWN -> {
+                              lx = e.rawX; ly = e.rawY; moved = 0f; t0 = e.eventTime
+                              if (mode == 0) { lookActive = true; lookStart() }
+                          }
                           MotionEvent.ACTION_MOVE -> {
                               val dx = e.rawX - lx; val dy = e.rawY - ly
                               lx = e.rawX; ly = e.rawY; moved += abs(dx) + abs(dy)
-                              moveCursor(dx * 2f, dy * 2f)
+                              when (mode) {
+                                  0 -> { pendDx += dx * 2.5f; pendDy += dy * 2.5f; lookPump() }
+                                  1 -> moveCursor(dx * 2f, dy * 2f)
+                                  else -> KeyInjector.mouseRel(cx, cy, dx * 1.5f, dy * 1.5f)
+                              }
                           }
-                          MotionEvent.ACTION_UP -> if (moved < dp(8) && e.eventTime - t0 < 200) tap(50)
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                              if (mode == 0) lookEnd()
+                              else if (mode == 1 && moved < dp(8) && e.eventTime - t0 < 200) tapAt(cx, cy, 50)
+                          }
                       }
                       true
                   }
-                  val clicks = row(
-                      btn("Tık") { tap(50) },
-                      btn("Çift tık") { tap(40); handler.postDelayed({ tap(40) }, 120) },
-                      btn("Basılı tut") { tap(600) }
-                  )
+
+                  lateinit var modeBtn: Button
+                  modeBtn = btn("Mod: Kamera", 1.5f, 40) {
+                      mode = (mode + 1) % 3
+                      modeBtn.text = when (mode) { 0 -> "Mod: Kamera"; 1 -> "Mod: Menü"; else -> "Mod: Fare" }
+                      cursor?.visibility = if (mode == 1) View.VISIBLE else View.INVISIBLE
+                  }
+                  val clicks = row(modeBtn, mouseHold("Vur", true), mouseHold("Koy", false), btn("Tık", 1f, 40) {
+                      when (mode) { 2 -> click(); 1 -> tapAt(cx, cy, 50); else -> tapAt(centerX(), centerY(), 50) }
+                  })
 
                   val wasd = row(
                       keyBtn("W", KeyEvent.KEYCODE_W), keyBtn("A", KeyEvent.KEYCODE_A),
