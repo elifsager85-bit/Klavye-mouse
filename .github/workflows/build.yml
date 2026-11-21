@@ -253,6 +253,8 @@ jobs:
               private lateinit var ui: Context
               private var cursor: View? = null
               private var panel: LinearLayout? = null
+              private var kbPanel: LinearLayout? = null
+              private lateinit var kbLp: WindowManager.LayoutParams
               private lateinit var cursorLp: WindowManager.LayoutParams
               private lateinit var panelLp: WindowManager.LayoutParams
               private var cx = 300f
@@ -298,6 +300,7 @@ jobs:
                   ui = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
                   addCursor()
                   addPanel()
+                  addKeyboardPanel()
                   cursor?.visibility = View.INVISIBLE
                   val err = KeyInjector.init()
                   Toast.makeText(this, err ?: "Gerçek tuş modu hazır ✓", Toast.LENGTH_LONG).show()
@@ -309,6 +312,7 @@ jobs:
               override fun onDestroy() {
                   try { cursor?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
                   try { panel?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
+                  try { kbPanel?.let { wm.removeViewImmediate(it) } } catch (_: Exception) {}
                   super.onDestroy()
               }
 
@@ -464,7 +468,7 @@ jobs:
                   setOnClickListener { onClick() }
               }
 
-              private fun keyBtn(label: String, code: Int, w: Float = 1f) = btn(label, w, 40) {}.apply {
+              private fun keyBtn(label: String, code: Int, w: Float = 1f, h: Int = 40) = btn(label, w, h) {}.apply {
                   setOnTouchListener { v, e ->
                       when (e.action) {
                           MotionEvent.ACTION_DOWN -> { v.isPressed = true; KeyInjector.key(code, true) }
@@ -505,6 +509,62 @@ jobs:
                   v.forEach { addView(it) }
               }
 
+              private fun addKeyboardPanel() {
+                  val h = 34
+                  val p = LinearLayout(ui).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(6), dp(6), dp(6), dp(6))
+                      background = GradientDrawable().apply { setColor(0xE6222222.toInt()); cornerRadius = dp(12).toFloat() }
+                  }
+                  kbLp = lp(dp(430), WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                  kbLp.x = dp(340); kbLp.y = dp(20)
+
+                  val title = TextView(ui).apply {
+                      text = "✥ Tüm tuşlar"; setTextColor(Color.WHITE); textSize = 13f
+                      gravity = Gravity.CENTER_VERTICAL
+                      layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f)
+                  }
+                  var ox = 0f; var oy = 0f; var sx = 0; var sy = 0
+                  title.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { ox = e.rawX; oy = e.rawY; sx = kbLp.x; sy = kbLp.y }
+                          MotionEvent.ACTION_MOVE -> {
+                              kbLp.x = sx + (e.rawX - ox).toInt(); kbLp.y = sy + (e.rawY - oy).toInt()
+                              wm.updateViewLayout(p, kbLp)
+                          }
+                      }
+                      true
+                  }
+                  p.addView(row(title, btn("✕", 0.5f, 34) { p.visibility = View.GONE }))
+
+                  fun fkeys(a: Int, b: Int) = row(*(a..b).map { n -> keyBtn("F$n", KeyEvent.KEYCODE_F1 + (n - 1), 1f, h) }.toTypedArray())
+                  fun letters(str: String) = row(*str.map { c -> keyBtn(c.uppercase(), KeyEvent.KEYCODE_A + (c - 'a'), 1f, h) }.toTypedArray())
+
+                  p.addView(fkeys(1, 6))
+                  p.addView(fkeys(7, 12))
+                  p.addView(row(*"1234567890".map { ch ->
+                      keyBtn(ch.toString(), if (ch == '0') KeyEvent.KEYCODE_0 else KeyEvent.KEYCODE_1 + (ch - '1'), 1f, h)
+                  }.toTypedArray()))
+                  p.addView(letters("qwertyuiop"))
+                  p.addView(letters("asdfghjkl"))
+                  p.addView(row(
+                      *"zxcvbnm".map { c -> keyBtn(c.uppercase(), KeyEvent.KEYCODE_A + (c - 'a'), 1f, h) }.toTypedArray(),
+                      keyBtn(",", KeyEvent.KEYCODE_COMMA, 1f, h), keyBtn(".", KeyEvent.KEYCODE_PERIOD, 1f, h), keyBtn("/", KeyEvent.KEYCODE_SLASH, 1f, h)
+                  ))
+                  p.addView(row(
+                      keyBtn("Tab", KeyEvent.KEYCODE_TAB, 1.2f, h), keyBtn("Alt", KeyEvent.KEYCODE_ALT_LEFT, 1.1f, h),
+                      keyBtn("Boşluk", KeyEvent.KEYCODE_SPACE, 2.6f, h), keyBtn("Enter", KeyEvent.KEYCODE_ENTER, 1.4f, h),
+                      keyBtn("⌫", KeyEvent.KEYCODE_DEL, 1.1f, h),
+                      keyBtn("←", KeyEvent.KEYCODE_DPAD_LEFT, 0.9f, h), keyBtn("↑", KeyEvent.KEYCODE_DPAD_UP, 0.9f, h),
+                      keyBtn("↓", KeyEvent.KEYCODE_DPAD_DOWN, 0.9f, h), keyBtn("→", KeyEvent.KEYCODE_DPAD_RIGHT, 0.9f, h)
+                  ))
+                  p.visibility = View.GONE
+                  wm.addView(p, kbLp)
+                  kbPanel = p
+              }
+
               private fun addPanel() {
                   val p = LinearLayout(ui).apply {
                       orientation = LinearLayout.VERTICAL
@@ -532,7 +592,9 @@ jobs:
                       }
                       true
                   }
-                  val bar = row(title, btn("✕", 0.5f) { disableSelf() })
+                  val bar = row(title,
+                      btn("⌨", 0.5f) { kbPanel?.let { it.visibility = if (it.visibility == View.VISIBLE) View.GONE else View.VISIBLE } },
+                      btn("✕", 0.5f) { disableSelf() })
 
                   val pad = View(ui).apply {
                       background = GradientDrawable().apply { setColor(0xFF3A3A3A.toInt()); cornerRadius = dp(8).toFloat() }
